@@ -1,0 +1,35 @@
+[package]
+name = "lua-perf"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+libc = "0.2.147"
+procfs = "0.16.0-RC1"
+procmaps = "0.4.1"
+memmap2 = "0.8.0"
+gimli = "0.28.0"
+rustc-demangle = "0.1.21"
+regex = "1.6"
+iced-x86 = "1.17"
+byteorder = "1.4.3"
+anyhow = "1.0"
+libbpf-rs="0.21.2"
+plain = "0.2"
+nix = "0.27.1"
+tracing = "0.1"
+tracing-subscriber = {version = "0.3", features = ["ansi", "env-filter", "fmt"]}
+blazesym = "=0.2.0-alpha.6"
+goblin = { version = "0.7.1", features = ["elf64"] }
+clap = { version = "4.4.6", features = ["derive", "env"] }
+clap_derive = "4.4.2"
+time = { version = "0.3", features = ["formatting", "local-offset", "macros"]}
+psutil = "3.2.2"
+lazy_static = "1.4.0"
+ctrlc = "3.4.1"
+
+[build-dependencies]
+libbpf-cargo = "0.21.2"
+
