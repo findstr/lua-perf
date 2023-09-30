@@ -578,8 +578,8 @@ impl Perf {
 			}
 		};
 
-		for (i, (addr, syms)) in stack.iter().zip(syms).enumerate() {
-			let mut addr_fmt = format!("[<{addr:016x}>]");
+		for (_i, (addr, syms)) in stack.iter().zip(syms).enumerate() {
+			let addr_fmt = format!("[<{addr:016x}>]");
 			if syms.is_empty() {
 				stack_syms.push(SymInfo{
 					addr: 0,
@@ -587,7 +587,7 @@ impl Perf {
 					name: addr_fmt.clone(),
 				})
 			} else {
-				for (i, sym) in syms.into_iter().enumerate() {
+				for (_i, sym) in syms.into_iter().enumerate() {
 					let symbolize::Sym {
 						name, offset, ..
 					} = sym;

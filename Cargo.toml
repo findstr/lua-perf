@@ -2,6 +2,19 @@
 name = "lua-perf"
 version = "0.1.0"
 edition = "2021"
+keywords = ["lua", "perf", "lua-perf"]
+build = "build.rs"
+readme = "README.en.md"
+license-file = "LICENSE"
+description = "A perf tool for C and Lua hybrid code"
+homepage = "https://github.com/findstr/lua-perf"
+repository = "https://github.com/findstr/lua-perf"
+categories = ["command-line-utilities", "development-tools::profiling"]
+documentation = "https://github.com/findstr/lua-perf/blob/main/README.en.md"
+exclude = [
+    "examples/*",
+    ".vscode/*",
+]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

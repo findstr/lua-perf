@@ -1,0 +1,16 @@
+{
+        "files.associations": {
+                "cstdlib": "c",
+                "algorithm": "c",
+                "functional": "c",
+                "typeinfo": "c",
+                "bit": "c",
+                "istream": "c",
+                "limits": "c",
+                "ranges": "c",
+                "streambuf": "c"
+        },
+        "rust-analyzer.linkedProjects": [
+                "./Cargo.toml"
+        ]
+}
