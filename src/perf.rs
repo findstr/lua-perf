@@ -58,10 +58,13 @@ struct StackFrame {
 	lstack: Vec<u64>,
 }
 
-struct LuaCallChunk {
-	c_addr: u64,
-	lua_frame: Vec<String>,
+#[derive(Debug)]
+enum LuaFrame {
+	Lua(String),
+	C(u64),
 }
+
+#[derive(Clone)]
 struct SymInfo {
 	addr: u64,
 	offset: u64,
@@ -505,7 +508,7 @@ impl Perf {
 						}
 					}
 				} else {
-			println!("Lua Stack:{:X}", *addr);
+					println!("Lua Stack:{:X}", *addr);
 					let mut stk = Vec::new();
 					stk.push(*addr);
 					show_stack_trace(
@@ -521,6 +524,7 @@ impl Perf {
 
 		let stack = StackFrame::from_event(event);
 		let stack_strs = self.combine_stack(skel, &stack);
+		println!("combined:");
 		println!("{}", stack_strs.join("\n"));
 		println!("=============");
 		0
@@ -639,59 +643,87 @@ impl Perf {
 			None => String::from("None"),
 		}
 	}
+	fn split_lua_chunk(&self, skel: &ProfileSkel, frame: &StackFrame) -> Vec<Vec<LuaFrame>> {
+		let mut chunks: Vec<Vec<LuaFrame>> = Vec::new();
+	    	let mut chunk: Vec<LuaFrame> = Vec::new();
+	    	for addr in frame.lstack.iter() {
+			if *addr == 0 { //CIST_FRESH
+				chunks.push(chunk);
+			   	chunk = Vec::new();
+			    	continue
+			}
+			if *addr & LUA_MASK == 0 {
+			    	chunk.push(LuaFrame::C(*addr))
+			} else {
+				let addrv = *addr & !LUA_MASK;
+				let file_id = addrv as u32;
+				let line = (addrv >> 32) as u32;
+				let str = format!("{}:{}", self.id_to_str(skel, file_id), line);
+				chunk.push(LuaFrame::Lua(str));
+			}
+		}
+		if chunk.len() > 0 {
+			chunks.push(chunk);
+		}
+		return chunks
+	}
+
+	fn split_c_chunk(&self, usym: &Vec<SymInfo>) -> Vec<Vec<SymInfo>> {
+		let mut chunks: Vec<Vec<SymInfo>> = Vec::new();
+		let mut chunk: Vec<SymInfo> = Vec::new();
+		for sym in usym.iter() {
+			if sym.name.contains("luaV_execute") {
+				chunk.push(sym.clone());
+				chunks.push(chunk);
+				chunk = Vec::new();
+			} else {
+				chunk.push(sym.clone());
+			}
+		}
+		if chunk.len() > 0 {
+			chunks.push(chunk);
+		}
+		return chunks
+	}
 
 	fn combine_stack(&self, skel: &ProfileSkel, frame: &StackFrame) -> Vec<String> {
-		let mut lua_call_chunk: Vec<LuaCallChunk> = Vec::new();
 		let ksyms = self.syms_of_stack(0, &frame.kstack);
 		let usyms = self.syms_of_stack(self.pid, &frame.ustack);
-		let mut frame_strs:Vec<String> = ksyms.iter().map(|s| s.name.clone()).collect();
 		//split lua call chunk
-		let mut chunk: Vec<String> = Vec::new();
-		for addr in frame.lstack.iter() {
-			if addr & LUA_MASK == 0 {	//c addr
-				lua_call_chunk.push(LuaCallChunk { c_addr: *addr, lua_frame: chunk });
-				chunk = Vec::new();
-				continue
+		let mut lua_chunks = self.split_lua_chunk(skel, frame);
+		let mut c_chunks = self.split_c_chunk(&usyms);
+		let mut frame_strs:Vec<String> = ksyms.iter().map(|s| s.name.clone()).collect();
+		for c_chunk in c_chunks.iter_mut() {
+			for i in 0..(c_chunk.len() - 1) {
+				frame_strs.push(c_chunk[i].name.clone());
 			}
-			let addrv = *addr & !LUA_MASK;
-			let file_id = addrv as u32;
-			let line = (addrv >> 32) as u32;
-			let str = format!("{}:{}", self.id_to_str(skel, file_id), line);
-			chunk.push(str);
-		}
-		if !chunk.is_empty() {
-			lua_call_chunk.push(LuaCallChunk { c_addr: 0, lua_frame: chunk })
-		}
-		let mut buf: Vec<String> = Vec::new();
-		for sym in usyms.iter() {
-			buf.push(sym.name.clone());
-			let mut match_index: usize = 0;
-			for (i, chunk) in lua_call_chunk.iter().enumerate() {
-				let match_c_addr = (sym.addr - sym.offset) == chunk.c_addr || 
-					(chunk.c_addr == 0 && sym.name.contains("luaV_execute"));
-				if match_c_addr {
-					match_index = i+1;
-					break;
-				}
-			}
-			if match_index <= 0 {
-				continue;
-			}
-			//find luaV_execute
-			for name in buf.iter() {
-				if name.contains("luaV_execute") {
-					for chunk in lua_call_chunk.drain(0..match_index as usize).into_iter() {
-						for name in chunk.lua_frame.iter() {
-							frame_strs.push(name.clone());
-						}
+			if lua_chunks.len() > 0 { //has lua stack left
+				let lua_chunk = lua_chunks.remove(0);
+				let lua_c_func: Vec<u64> = lua_chunk.iter().map(
+					|f| match f {
+						LuaFrame::Lua(_) => 0,
+						LuaFrame::C(addr) => *addr,
 					}
-				}
-				frame_strs.push(name.clone());
+				).collect();
+				let lua_c_syms = self.syms_of_stack(self.pid, &lua_c_func);
+				for (frame, sym) in lua_chunk.iter().zip(lua_c_syms) {
+					match frame {
+					LuaFrame::Lua(str) => {
+						frame_strs.push(str.clone())
+					},
+					LuaFrame::C(addr) => 
+						if c_chunk.iter().find(
+							|&x| return x.addr - x.offset == *addr
+						).is_none() {
+							frame_strs.push(sym.name.clone())
+						} 
+					}
+				};
 			}
-			buf.clear();
+			//push c chunk
+			frame_strs.push(c_chunk.last().unwrap().name.clone());
 		}
-		frame_strs.extend(buf);
-		frame_strs
+		return frame_strs;
 	}
 
 	fn flame_entry(&self, skel: &ProfileSkel, frame: &StackFrame) -> String {

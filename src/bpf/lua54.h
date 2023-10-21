@@ -40,16 +40,16 @@ typedef void (*lua_Hook) (lua_State *L, lua_Debug *ar);
 /*
 ** Bits in CallInfo status
 */
-#define CIST_OAH				(1<<0)	/* original value of 'allowhook' */
-#define CIST_C					(1<<1)	/* call is running a C function */
-#define CIST_FRESH			(1<<2)	/* call is on a fresh "luaV_execute" frame */
-#define CIST_HOOKED		 (1<<3)	/* call is running a debug hook */
-#define CIST_YPCALL		 (1<<4)	/* doing a yieldable protected call */
-#define CIST_TAIL			 (1<<5)	/* call was tail called */
-#define CIST_HOOKYIELD	(1<<6)	/* last hook called yielded */
-#define CIST_FIN				(1<<7)	/* function "called" a finalizer */
-#define CIST_TRAN			 (1<<8)	/* 'ci' has transfer information */
-#define CIST_CLSRET		 (1<<9)	/* function is closing tbc variables */
+#define CIST_OAH		(1<<0)	/* original value of 'allowhook' */
+#define CIST_C			(1<<1)	/* call is running a C function */
+#define CIST_FRESH		(1<<2)	/* call is on a fresh "luaV_execute" frame */
+#define CIST_HOOKED		(1<<3)	/* call is running a debug hook */
+#define CIST_YPCAL		(1<<4)	/* doing a yieldable protected call */
+#define CIST_TAIL		(1<<5)	/* call was tail called */
+#define CIST_HOOKYIELD		(1<<6)	/* last hook called yielded */
+#define CIST_FIN		(1<<7)	/* function "called" a finalizer */
+#define CIST_TRAN		(1<<8)	/* 'ci' has transfer information */
+#define CIST_CLSRET		(1<<9)	/* function is closing tbc variables */
 /* Bits 10-12 are used for CIST_RECST (see below) */
 #define CIST_RECST			10
 #if defined(LUA_COMPAT_LT_LE)
@@ -522,6 +522,8 @@ static __always_inline void *lua_func_addr(StkIdRel stk, CallInfo *ci) {
 	DEBUG("lua_func_addr lua:%x %x", file_id, source.linedefined);
 	return MARK_LUA_ADDR((uintptr_t)source.linedefined << 32 | file_id);
 }
+
+#define lua_ci_is_fresh(ci)	((ci->callstatus & CIST_FRESH) == CIST_FRESH)
 
 #endif
 

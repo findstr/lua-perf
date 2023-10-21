@@ -4,7 +4,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_tracing.h>
-#include "lstate.h"
+#include "lua.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -45,6 +45,8 @@ struct lua_stack {
 	u32 count;
 	lua_State *L;
 	lua_State *buf[MAX_STACK_DEPTH];
+	u8 L_cnt;
+	u8 cnt[MAX_STACK_DEPTH];
 };
 
 struct c_stk_ctx {
@@ -58,6 +60,7 @@ struct c_stk_ctx {
 };
 
 struct lua_stk_ctx {
+	int calln;
 	int lua_index;
 	StkIdRel stack;	
 	CallInfo  *ci;
@@ -125,15 +128,20 @@ unwind_c(u32 i, void *ud)
 		lua_State *L = (lua_State *)ctx->rbx;
 		if (lua->L == NULL) {
 			ctx->lua->L = L;
+			ctx->lua->L_cnt = 1;
 		} else if (lua->L != L) {
 			size_t x = (size_t)lua->count & 0xffff;
 			if (x < MAX_STACK_DEPTH) {
 				lua->buf[x] = lua->L;
+				lua->cnt[x] = lua->L_cnt;
 				lua->L = L;
+				lua->L_cnt = 1;
 				lua->count++;
 			}
 			DEBUG("unwind_c lua stack change:%lx", L);
-		} 
+		} else {
+			ctx->lua->L_cnt++;
+		}
 	}
 	event->ustack[i] = ctx->rip;
 	event->ustack_sz++;
@@ -192,6 +200,7 @@ struct {
 	__uint(max_entries, 1);
 } tmp_call_info SEC(".maps");
 
+DECLARE_TMP_VAR(CallInfo, ci);
 
 static __always_inline int lua_ci_stk(void *ptr, CallInfo **ci, StkIdRel *stk) {
 	lua_State L;
@@ -211,12 +220,9 @@ unwind_lua(u32 i, void *ud)
 	int err;
 	void *addr;
 	u32 zero = 0;
-	DEBUG("----unwind_lua");
-	CallInfo *ci = bpf_map_lookup_elem(&tmp_call_info, &zero);
-	if (ci == NULL) {
-		return LOOP_BREAK;
-	}
+	FETCH_TMP_VAR(CallInfo, ci, LOOP_BREAK);
 	struct lua_stk_ctx *ctx = (struct lua_stk_ctx *)ud;
+	DEBUG("----unwind_lua ci:%lx", ctx->ci);
 	if ((ctx->event->lstack_sz & 0xffff) >= ARRAY_SIZE(ctx->event->lstack)) {
 		return LOOP_BREAK;
 	}	
@@ -227,6 +233,8 @@ unwind_lua(u32 i, void *ud)
 			return LOOP_BREAK;
 		}
 		lua_State *L = ctx->lua->buf[i];
+		ctx->calln = ctx->lua->cnt[i];
+		DEBUG("unwind_lua begin ci:%d calln:%d", ctx->lua_index, ctx->calln);
 		int err = lua_ci_stk(L, &ctx->ci, &ctx->stack);
 		if (err != 0) {
 			DEBUG("unwind_lua read L error:%d", err);
@@ -245,13 +253,21 @@ unwind_lua(u32 i, void *ud)
 		DEBUG("unwind_lua lua_func_addr fail:%lx", ctx->ci);
 		return LOOP_CONTINUE;
 	}
-	DEBUG("unwind_lua i:%d luaV_execute :%lx prev:%lx", i, addr, ci->previous);
+	DEBUG("unwind_lua i:%d luaV_execute :%lx calln:%d prev:%lx", i, addr, ctx->calln, ci->previous);
 	size_t j = (size_t)ctx->event->lstack_sz & 0xffff;
 	if (j < ARRAY_SIZE(ctx->event->lstack)) {
 		ctx->event->lstack[j] = (u64)addr;
 		ctx->event->lstack_sz++;
 	}
-	ctx->ci = ci->previous;
+	j = (size_t)ctx->event->lstack_sz & 0xffff;
+	if (j < ARRAY_SIZE(ctx->event->lstack) && lua_ci_is_fresh(ci)) {
+		ctx->event->lstack[j] = 0;
+		ctx->event->lstack_sz++;
+		if (--ctx->calln <= 0) {
+			ci->previous = NULL;
+		}
+	}
+		ctx->ci = ci->previous;
 	return LOOP_CONTINUE;
 }
 
@@ -296,6 +312,7 @@ int profile(struct bpf_perf_event_data *perf_ctx)
 	ctx.c.event = stack_event;
 	stack_event->ustack_sz = 0;
 	lua_stack->L = NULL;
+	lua_stack->L_cnt = 0;
 	lua_stack->count = 0;
 	//unwind user space
 	DEBUG("---------profile unwind start:%lx", ctx.c.rip);
@@ -308,7 +325,9 @@ int profile(struct bpf_perf_event_data *perf_ctx)
 	}
 	//unwind lua_State
 	if (ctx.c.lua->L != NULL && (ctx.c.lua->count & 0xffff) < MAX_STACK_DEPTH) {
-		ctx.c.lua->buf[ctx.c.lua->count & 0xffff] = ctx.c.lua->L;
+		int i = ctx.c.lua->count & 0xffff;
+		ctx.c.lua->buf[i] = ctx.c.lua->L;
+		ctx.c.lua->cnt[i] = ctx.c.lua->L_cnt;
 		ctx.c.lua->count++;
 	}
 	stack_event->lstack_sz = 0;
@@ -322,7 +341,7 @@ int profile(struct bpf_perf_event_data *perf_ctx)
 		stack_event->lstack_sz *= sizeof(u64);
 	}
 	stack_event->stk_id = get_stack_id(stack_event);
-	#if 0
+	#if LOG_LEVEL <= LOG_DEBUG
 	struct stack_event *new_event = bpf_ringbuf_reserve(&events, sizeof(*stack_event), 0);
 	if (!new_event)
 		return 1;
