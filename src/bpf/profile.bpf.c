@@ -57,6 +57,7 @@ struct c_stk_ctx {
 	u64 rbx;
 	struct lua_stack *lua;
 	struct stack_event *event;
+	bool exist_lua;
 };
 
 struct lua_stk_ctx {
@@ -75,7 +76,7 @@ static __always_inline u64 unwind_get(struct c_stk_ctx *ctx, int reg) {
 		return ctx->rbp;
 	case REG_RSP:
 		return ctx->rsp;
-	case REG_RDI:
+	case REG_RBX:
 		return ctx->rbx;
 	case REG_RA:
 		return ctx->rip;
@@ -125,22 +126,50 @@ unwind_c(u32 i, void *ud)
 		return LOOP_BREAK;
 	}	
 	if (ctx->rip >= ctrl.lua_eip_begin && ctx->rip < ctrl.lua_eip_end) {
-		lua_State *L = (lua_State *)ctx->rbx;
-		if (lua->L == NULL) {
-			ctx->lua->L = L;
-			ctx->lua->L_cnt = 1;
-		} else if (lua->L != L) {
-			size_t x = (size_t)lua->count & 0xffff;
-			if (x < MAX_STACK_DEPTH) {
-				lua->buf[x] = lua->L;
-				lua->cnt[x] = lua->L_cnt;
-				lua->L = L;
-				lua->L_cnt = 1;
-				lua->count++;
+		ctx->exist_lua = true;
+	}
+	if (ctx->exist_lua) {
+		bool find = false;
+		struct fn_var_pos pos;
+		for (int i = 0; i < ARRAY_SIZE(ctrl.lua_var_pos); i++) {
+			pos = ctrl.lua_var_pos[i];
+			if (ctx->rip >= pos.eip_begin && ctx->rip < pos.eip_end) {
+				find = true;
+				break;
 			}
-			DEBUG("unwind_c lua stack change:%lx", L);
-		} else {
-			ctx->lua->L_cnt++;
+		}
+		if (find) {
+			lua_State *L;
+			ctx->exist_lua = false;
+			if (pos.is_mem) {
+				u64 addr = unwind_get(ctx, pos.reg);
+				addr += pos.disp;
+				DEBUG("unwind_c L mem, reg:%d, mem:%d", pos.reg, pos.disp);
+				int err = bpf_probe_read_user(&L, sizeof(L), (void *)addr);
+				if (err != 0) {
+					ERROR("unwind_c read L error:%d addr:%x", err, addr);
+					return LOOP_BREAK;
+				}
+			} else {
+				L = (lua_State *)unwind_get(ctx, pos.reg);
+				DEBUG("unwind_c L reg:%d", pos.reg);
+			}
+			if (lua->L == NULL) {
+				ctx->lua->L = L;
+				ctx->lua->L_cnt = 1;
+			} else if (lua->L != L) {
+				size_t x = (size_t)lua->count & 0xffff;
+				if (x < MAX_STACK_DEPTH) {
+					lua->buf[x] = lua->L;
+					lua->cnt[x] = lua->L_cnt;
+					lua->L = L;
+					lua->L_cnt = 1;
+					lua->count++;
+				}
+				DEBUG("unwind_c lua stack change:%lx", L);
+			} else {
+				ctx->lua->L_cnt++;
+			}
 		}
 	}
 	event->ustack[i] = ctx->rip;
@@ -167,8 +196,7 @@ unwind_c(u32 i, void *ud)
 		return LOOP_BREAK;
 	}
 	ctx->rbp = unwind_reg(ctx, REG_RBP, &eh_ctx->regs[REG_RBP]);
-	PRINT_REG_RULE(eh_ctx, REG_RDI);
-	ctx->rbx = unwind_reg(ctx, REG_RDI, &eh_ctx->regs[REG_RBX]);
+	ctx->rbx = unwind_reg(ctx, REG_RBX, &eh_ctx->regs[REG_RBX]);
 	ctx->rip = unwind_reg(ctx, REG_RA, &eh_ctx->regs[REG_RA]);
 	ctx->rsp = ctx->cfa;
 	if (ctx->rip == 0) 
@@ -310,6 +338,7 @@ int profile(struct bpf_perf_event_data *perf_ctx)
 	ctx.c.cfa = ctx.c.rsp;
 	ctx.c.lua = lua_stack;
 	ctx.c.event = stack_event;
+	ctx.c.exist_lua = false;
 	stack_event->ustack_sz = 0;
 	lua_stack->L = NULL;
 	lua_stack->L_cnt = 0;

@@ -30,12 +30,14 @@ u32 EH_FRAME_COUNT;
 #define MAX_STACK_DEPTH 128
 #endif
 
-#define REG_RBX	(3)
-#define REG_RDI (5)
-#define REG_RBP (6)
-#define REG_RSP (7)
-#define REG_RA  (16)
-#define MAX_REG 16
+enum {
+	REG_RBX = 3,
+	REG_RDI = 5,
+	REG_RBP = 6,
+	REG_RSP = 7,
+	REG_RA = 16,
+	REG_COUNT,
+};
 
 #define LUA_ADDR  (1ull << 63)
 
@@ -75,9 +77,6 @@ u32 EH_FRAME_COUNT;
 	#define ERROR(...)	(void)0
 #endif
 
-//#define PRINT_REG_RULE(ctx, i)	DEBUG("reg:%d rule:%d data:%d", i, ctx->regs[i].rule, ctx->regs[i].data)
-#define PRINT_REG_RULE(ctx, i)	(void)ctx;
-
 #define DECLARE_TMP_VAR(typ, name)	\
 struct {\
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY); \
@@ -89,7 +88,7 @@ struct {\
 #define	FETCH_TMP_VAR(typ, name, ret)	 \
 	typ *name = bpf_map_lookup_elem(&tmp_##name, &ZERO); \
 	if (name == NULL) \
-		return ret; 
+		return ret;
 
 enum event_type {
 	EVENT_NONE = 0,
@@ -164,7 +163,7 @@ typedef struct eh_ctx {
 	enum cfa_rule cfa_rule;
 	u32 cfa_reg;
 	s64 cfa_off;
-	struct eh_reg regs[MAX_REG + 1];
+	struct eh_reg regs[REG_COUNT];
 } eh_ctx;
 
 struct {
@@ -197,10 +196,18 @@ struct {
     	__type(value, struct stack_count);
 } stacks SEC(".maps");
 
+struct fn_var_pos {
+	u64 eip_begin;
+	u64 eip_end;
+	bool is_mem;
+	u8  reg;	//reg id
+	s32 disp;	//disp value
+};
 
 struct ctrl {
 	u64 lua_eip_begin;
 	u64 lua_eip_end;
+	struct fn_var_pos lua_var_pos[3];
 	pid_t target_pid;
 	unsigned long long dev;
 	unsigned long long ino;

@@ -101,10 +101,7 @@ impl std::fmt::Display for EhInstr {
 }
 
 impl<'a> EhInstrContext {
-	pub fn from_path(path: &String) -> Self {
-		let elf_data = std::fs::read(path).unwrap();
-		let data = &elf_data;
-		let elf = Elf::parse(data).unwrap();
+	pub fn from_elf(elf: &'a Elf<'a>, elf_data: &'a Vec<u8>) -> Self {
 		let mut instr_ctx = EhInstrContext {
 			code_align_factor: 0,
 			data_align_factor: 1,

@@ -1,5 +1,6 @@
 mod maps;
 mod eh;
+mod var;
 mod syscall;
 
 use std::fs;
@@ -12,6 +13,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::vec::Vec;
 use blazesym::symbolize;
+use gimli::Register;
+use gimli::X86_64;
+use goblin::elf::Elf;
 use libc::pid_t;
 use std::os::linux::fs::MetadataExt;
 use std::collections::HashMap;
@@ -96,21 +100,42 @@ impl StackFrame {
 	}
 }
 
+pub struct LuaFn {
+	pub addr: u64,
+	pub size: u64,
+	pub vars: Vec<var::FnVarPos>,
+}
 
-fn build_eh_ctx(pid: pid_t) ->(std::vec::Vec<profile_bss_types::eh_ctx>, u64, u32) {
-	let mut lua_eip = 0 as u64;
-	let mut lua_size = 0 as u32;
+
+fn build_eh_ctx(pid: pid_t) ->(std::vec::Vec<profile_bss_types::eh_ctx>, LuaFn) {
+	let mut lua_fn = LuaFn{
+		addr: 0,
+		size: 0,
+		vars: Vec::new(),
+	};
 	let mut eh_all_ctx = Vec::new();
 	let maps = maps::Files::from_pid(pid as pid_t);
 	for (path, maps) in maps.iter() {
 		if path.contains("(deleted)") {
 			continue;
 		}
-		let eh_ctx = eh::EhInstrContext::from_path(&path);
+		let elf_data = std::fs::read(path).unwrap();
+		let elf = Elf::parse(&elf_data).unwrap();
+		let eh_ctx = eh::EhInstrContext::from_elf(&elf, &elf_data);
 		if let Some(lua_fde) = eh_ctx.get_fde_desc(&"luaV_execute+0x0".to_string()) {
 			assert!(lua_fde.size < std::u32::MAX as u64);
-			lua_eip = maps.translate(lua_fde.loc);
-			lua_size = lua_fde.size as u32;
+			lua_fn.addr = maps.translate(lua_fde.loc);
+			lua_fn.size = lua_fde.size as u64;
+			let fns_var_pos = var::collect_lua_fn_var_pos(&elf, &elf_data);
+			for var_pos in fns_var_pos.iter() {
+				let addr = maps.translate(var_pos.addr);
+				let fn_var_pos = var::FnVarPos {
+					addr: addr,
+					size: var_pos.size as u64,
+					pos: var_pos.pos.clone(),
+				};
+				lua_fn.vars.push(fn_var_pos);
+			}
 		}
 		for inst in eh_ctx.iter() {
 			let eip = maps.translate(inst.loc);
@@ -176,7 +201,7 @@ fn build_eh_ctx(pid: pid_t) ->(std::vec::Vec<profile_bss_types::eh_ctx>, u64, u3
 	}
 	//对eh_all_ctx进行排序
 	eh_all_ctx.sort_by_key(|a| a.eip);
-	return (eh_all_ctx, lua_eip, lua_size);
+	return (eh_all_ctx, lua_fn);
 }
 
 impl profile_bss_types::eh_ctx {
@@ -280,15 +305,34 @@ impl Perf {
 
 		Ok(())
 	}
-	fn build_eh_ctx(pid: pid_t) ->(std::vec::Vec<profile_bss_types::eh_ctx>, u64, u32) {
+	fn build_eh_ctx(pid: pid_t) ->(std::vec::Vec<profile_bss_types::eh_ctx>, LuaFn) {
 		build_eh_ctx(pid)
 	}
+	fn bpf_var_pos(var_pos: &var::FnVarPos) -> profile_bss_types::fn_var_pos {
+		let mut pos = profile_bss_types::fn_var_pos::default();
+		pos.eip_begin = var_pos.addr;
+		pos.eip_end = var_pos.addr + var_pos.size;
+		match &var_pos.pos {
+			var::VarPos::Reg(reg_name)=> {
+				let reg = X86_64::name_to_register(reg_name).unwrap();
+				pos.is_mem = false;
+				pos.reg = reg.0 as u8;
+			},
+			var::VarPos::Mem(reg_name, disp) => {
+				let reg = X86_64::name_to_register(reg_name).unwrap();
+				pos.is_mem = true;
+				pos.reg = reg.0 as u8;
+				pos.disp = *disp as i32;
+			},
+		}
+		pos
+	}
+
 	fn init<'a>(&self) ->Result<ProfileSkel<'a>> {
 		//build eh_ctx
 		let result = Self::build_eh_ctx(self.pid);
 		let eh_list = result.0;
-		let lua_eip = result.1;
-		let lua_size = result.2;
+		let lua_fn = result.1;
 		//tracing
 		let level = LevelFilter::DEBUG;
 		let subscriber = FmtSubscriber::builder()
@@ -317,8 +361,14 @@ impl Perf {
 		open_skel.bss().ctrl.dev = stat.st_dev();
 		open_skel.bss().ctrl.ino = stat.st_ino();
 		open_skel.bss().ctrl.target_pid = self.pid;
-		open_skel.bss().ctrl.lua_eip_begin = lua_eip;
-		open_skel.bss().ctrl.lua_eip_end = lua_eip + lua_size as u64;
+		open_skel.bss().ctrl.lua_eip_begin = lua_fn.addr;
+		open_skel.bss().ctrl.lua_eip_end = lua_fn.addr + lua_fn.size;
+		for (i, var) in lua_fn.vars.iter().enumerate() {
+			open_skel.bss().ctrl.lua_var_pos[i] = Self::bpf_var_pos(var);
+			println!("lua_var_pos:{:?}", open_skel.bss().ctrl.lua_var_pos[i]);
+		}
+
+		//open_skel.bss().ctrl
 		let mut skel = open_skel.load().unwrap();
 		for (i, ctx) in eh_list.iter().enumerate() {
 			let key = (i as u32).to_ne_bytes();
@@ -788,5 +838,34 @@ impl Perf {
 			close(pefd).unwrap();
 		}
 		Ok(())
+	}
+}
+
+
+
+#[cfg(test)]
+mod tests {
+	use goblin::elf::Elf;
+	use super::*;
+
+	#[test]
+	fn test_find_func_code() {
+		let paths = vec![
+			"lua.clang.o0",
+			"lua.clang.o1",
+			"lua.clang.o2", 
+			"lua.clang.o3",
+			"lua.gcc.o0", 
+			"lua.gcc.o1", 
+			"lua.gcc.o2",
+			"lua.gcc.o3",
+		];
+		for path in paths.iter() {
+			let elf_data = std::fs::read(path).unwrap();
+			let data = &elf_data;
+			let elf = Elf::parse(data).unwrap();
+			//let fn_vars = var::parse_var(&elf, &elf_data);
+			//println!("========{}======:{:?}", path, fn_vars);
+		}
 	}
 }

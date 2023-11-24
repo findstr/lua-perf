@@ -22,7 +22,7 @@ exclude = [
 libc = "0.2.147"
 procfs = "0.16.0-RC1"
 procmaps = "0.4.1"
-memmap2 = "0.8.0"
+memmap2 = "0.9.0"
 gimli = "0.28.0"
 rustc-demangle = "0.1.21"
 regex = "1.6"
@@ -42,6 +42,7 @@ time = { version = "0.3", features = ["formatting", "local-offset", "macros"]}
 psutil = "3.2.2"
 lazy_static = "1.4.0"
 ctrlc = "3.4.1"
+capstone = "0.11.0"
 
 [build-dependencies]
 libbpf-cargo = "0.21.2"
