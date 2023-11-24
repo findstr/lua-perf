@@ -13,7 +13,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::vec::Vec;
 use blazesym::symbolize;
-use gimli::Register;
 use gimli::X86_64;
 use goblin::elf::Elf;
 use libc::pid_t;
@@ -334,7 +333,7 @@ impl Perf {
 		let eh_list = result.0;
 		let lua_fn = result.1;
 		//tracing
-		let level = LevelFilter::DEBUG;
+		let level = LevelFilter::INFO;
 		let subscriber = FmtSubscriber::builder()
 			.with_max_level(level)
 			.with_span_events(FmtSpan::FULL)
@@ -343,7 +342,7 @@ impl Perf {
 		let () = set_global_subscriber(subscriber).expect("failed to set tracing subscriber");
 		let mut skel_builder = ProfileSkelBuilder::default();
 		//TODO:enable debug 
-		skel_builder.obj_builder.debug(true);
+		skel_builder.obj_builder.debug(false);
 		let mut open_skel = skel_builder.open().unwrap();
 		//set max entries
 		open_skel.bss().EH_FRAME_COUNT = eh_list.len() as u32;
@@ -365,7 +364,6 @@ impl Perf {
 		open_skel.bss().ctrl.lua_eip_end = lua_fn.addr + lua_fn.size;
 		for (i, var) in lua_fn.vars.iter().enumerate() {
 			open_skel.bss().ctrl.lua_var_pos[i] = Self::bpf_var_pos(var);
-			println!("lua_var_pos:{:?}", open_skel.bss().ctrl.lua_var_pos[i]);
 		}
 
 		//open_skel.bss().ctrl
@@ -399,7 +397,7 @@ impl Perf {
 				buf.leak().as_mut_ptr() as *mut syscall::perf_event_attr
 			)
 		};
-		attr._type = syscall::PERF_TYPE_HARDWARE;
+		attr._type = syscall::PERF_TYPE_SOFTWARE;
 		attr.size = mem::size_of::<syscall::perf_event_attr>() as u32;
 		attr.config = syscall::PERF_COUNT_HW_CPU_CYCLES;
 		attr.sample.sample_freq = freq;
@@ -573,7 +571,8 @@ impl Perf {
 		println!();
 
 		let stack = StackFrame::from_event(event);
-		let stack_strs = self.combine_stack(skel, &stack);
+		let mut stack_strs = self.combine_stack(skel, &stack);
+		stack_strs.reverse();
 		println!("combined:");
 		println!("{}", stack_strs.join("\n"));
 		println!("=============");
@@ -698,6 +697,7 @@ impl Perf {
 	    	let mut chunk: Vec<LuaFrame> = Vec::new();
 	    	for addr in frame.lstack.iter() {
 			if *addr == 0 { //CIST_FRESH
+				chunk.reverse();
 				chunks.push(chunk);
 			   	chunk = Vec::new();
 			    	continue
@@ -713,17 +713,29 @@ impl Perf {
 			}
 		}
 		if chunk.len() > 0 {
+			chunk.reverse();
 			chunks.push(chunk);
 		}
+		chunks.reverse();
 		return chunks
 	}
 
-	fn split_c_chunk(&self, usym: &Vec<SymInfo>) -> Vec<Vec<SymInfo>> {
+	fn split_c_chunk(&self, usym: &Vec<SymInfo>, l_chunks: &Vec<Vec<LuaFrame>>) -> Vec<Vec<SymInfo>> {
 		let mut chunks: Vec<Vec<SymInfo>> = Vec::new();
 		let mut chunk: Vec<SymInfo> = Vec::new();
-		for sym in usym.iter() {
-			if sym.name.contains("luaV_execute") {
-				chunk.push(sym.clone());
+		for sym in usym.iter().rev() {
+			//TODO process recursive call
+			let start_addr = sym.addr - sym.offset;
+			let c_start = l_chunks.iter().find(|&x| 
+				match x.first() {
+					Some(LuaFrame::C(addr)) => *addr == start_addr,
+					_ => false,
+				}
+			).is_some();
+			if c_start || sym.name.contains("luaV_execute") {
+				if !c_start {
+					chunk.push(sym.clone());
+				}
 				chunks.push(chunk);
 				chunk = Vec::new();
 			} else {
@@ -741,10 +753,10 @@ impl Perf {
 		let usyms = self.syms_of_stack(self.pid, &frame.ustack);
 		//split lua call chunk
 		let mut lua_chunks = self.split_lua_chunk(skel, frame);
-		let mut c_chunks = self.split_c_chunk(&usyms);
-		let mut frame_strs:Vec<String> = ksyms.iter().map(|s| s.name.clone()).collect();
+		let mut c_chunks = self.split_c_chunk(&usyms, &lua_chunks);
+		let mut frame_strs:Vec<String> = Vec::new();
 		for c_chunk in c_chunks.iter_mut() {
-			for i in 0..(c_chunk.len() - 1) {
+			for i in 0..(c_chunk.len()) {
 				frame_strs.push(c_chunk[i].name.clone());
 			}
 			if lua_chunks.len() > 0 { //has lua stack left
@@ -770,15 +782,14 @@ impl Perf {
 					}
 				};
 			}
-			//push c chunk
-			frame_strs.push(c_chunk.last().unwrap().name.clone());
 		}
+		let mut kstack = ksyms.iter().rev().map(|s| s.name.clone()).collect();
+		frame_strs.append(&mut kstack);
 		return frame_strs;
 	}
 
 	fn flame_entry(&self, skel: &ProfileSkel, frame: &StackFrame) -> String {
-		let mut strs = self.combine_stack(skel, frame);
-		strs.reverse();
+		let strs = self.combine_stack(skel, frame);
 		strs.join(";")
 	}
 	fn collect_flame(&self, skel: &ProfileSkel) {
@@ -846,8 +857,6 @@ impl Perf {
 #[cfg(test)]
 mod tests {
 	use goblin::elf::Elf;
-	use super::*;
-
 	#[test]
 	fn test_find_func_code() {
 		let paths = vec![
@@ -863,7 +872,7 @@ mod tests {
 		for path in paths.iter() {
 			let elf_data = std::fs::read(path).unwrap();
 			let data = &elf_data;
-			let elf = Elf::parse(data).unwrap();
+			let _elf = Elf::parse(data).unwrap();
 			//let fn_vars = var::parse_var(&elf, &elf_data);
 			//println!("========{}======:{:?}", path, fn_vars);
 		}

@@ -1,7 +1,7 @@
 use capstone::arch::x86::X86OperandType;
 use capstone::{prelude::*, Insn, arch::x86::X86Operand};
 use goblin::elf::Elf;
-use goblin::elf::section_header::{SHT_SYMTAB};
+use goblin::elf::section_header::SHT_SYMTAB;
 
 #[derive(Debug, Clone)]
 pub enum VarPos {
@@ -129,7 +129,6 @@ pub fn collect_lua_fn_var_pos<'a>(elf: &'a Elf<'a>, elf_data: &'a Vec<u8>) -> Ve
 					if ops.len() == 2 && ops[1].op_type == X86OperandType::Reg(arch::x86::X86Reg::X86_REG_RDI.into()) {
 						mov_idx = i;
 						mov_ops = ops[0].clone();
-						//println!("{}: {} {}", caller.name, instr.mnemonic().unwrap(), instr.op_str().unwrap());
 					}
 					continue
 				},
@@ -146,14 +145,12 @@ pub fn collect_lua_fn_var_pos<'a>(elf: &'a Elf<'a>, elf_data: &'a Vec<u8>) -> Ve
 						_ => false
 					};
 					if hit {
-						//println!("{}: {} {}", caller.name, instr.mnemonic().unwrap(), instr.op_str().unwrap());
 						break
 					}
 				},
 				"luaD_rawrunprotected" => {
 					let hit = ops[0].op_type == X86OperandType::Imm(arch::x86::X86Reg::X86_REG_RDI.into());
 					if hit {
-						//println!("{}: {} {}", caller.name, instr.mnemonic().unwrap(), instr.op_str().unwrap());
 						break
 					}
 				},
@@ -174,7 +171,6 @@ pub fn collect_lua_fn_var_pos<'a>(elf: &'a Elf<'a>, elf_data: &'a Vec<u8>) -> Ve
 			}
 			_ => panic!("unsupported mov ops:{:?}", mov_ops.op_type),
 		};
-		println!("{}: {:?}", caller.name, pos);
 		fn_var_pos.push(FnVarPos {
 			addr: caller.addr,
 			size: caller.size,

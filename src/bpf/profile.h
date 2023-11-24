@@ -289,7 +289,7 @@ static __always_inline void cache_str_cpy(struct string *dst, const struct strin
 }
 
 DECLARE_TMP_VAR(struct string, str_buf);
-static __always_inline u32 string_to_id(char *str, size_t len)
+static __always_inline u32 string_to_id(char *str, u32 len)
 {
 	int err;
 	u32 hash, i;
@@ -299,6 +299,7 @@ static __always_inline u32 string_to_id(char *str, size_t len)
 		 str += len - sizeof(str_buf->data);
 		 len = sizeof(str_buf->data);
 	}
+	len &= 0xfffff;
 	str_buf->len = len;
 	err = bpf_probe_read_user(str_buf->data, str_buf->len, str);
 	if (err != 0) {

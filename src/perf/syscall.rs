@@ -53,7 +53,9 @@ pub struct perf_event_attr {
     pub __reserved_3: u32,
 }
 
+#[allow(dead_code)]
 pub const PERF_TYPE_HARDWARE: u32 = 0;
+pub const PERF_TYPE_SOFTWARE: u32 = 1;
 pub const PERF_COUNT_HW_CPU_CYCLES: u64 = 0;
 
 extern "C" {

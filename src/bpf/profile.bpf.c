@@ -163,7 +163,7 @@ unwind_c(u32 i, void *ud)
 					lua->buf[x] = lua->L;
 					lua->cnt[x] = lua->L_cnt;
 					lua->L = L;
-					lua->L_cnt = 1;
+					lua->L_cnt = 1;	
 					lua->count++;
 				}
 				DEBUG("unwind_c lua stack change:%lx", L);
@@ -268,6 +268,18 @@ unwind_lua(u32 i, void *ud)
 			DEBUG("unwind_lua read L error:%d", err);
 			return LOOP_BREAK;
 		} 
+		//try extend more one lua frame for race condition
+		if (ctx->lua_index == 0 && ctx->ci != NULL) {
+			err = bpf_probe_read_user(ci, sizeof(*ci), (void *)ctx->ci);
+			if (err != 0) {
+				ERROR("unwind_lua read ci error:%d", err);
+				return LOOP_BREAK;
+			}
+			if (ci->next != NULL) {
+				ctx->ci = ci->next;
+				ctx->calln++;
+			}
+		}
 		ctx->lua_index++;
 	}
 	err = bpf_probe_read_user(ci, sizeof(*ci), (void *)ctx->ci);
@@ -295,7 +307,7 @@ unwind_lua(u32 i, void *ud)
 			ci->previous = NULL;
 		}
 	}
-		ctx->ci = ci->previous;
+	ctx->ci = ci->previous;
 	return LOOP_CONTINUE;
 }
 
