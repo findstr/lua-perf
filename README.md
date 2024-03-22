@@ -43,7 +43,7 @@ sudo cat /sys/kernel/debug/tracing/trace_pipe
 `lua-perf`目前存在以下已知问题：
 
 - 尚不支持`CFA_expression`，在某些极端情况下可能会导致调用栈回溯失败。
-- 在分析Lua栈时，目前通过写死寄存器 `rbx` 来寻找 `L` 指针，这对于大多数情况下的 `GCC -O2` 是正确的。但是，根据GCC的优化级别不同，`L` 的值可能存储在不同的寄存器中，这可能导致Lua栈回溯失败。
+- 在分析Lua栈时，动态分析`L`寄存器(目前仅支持gcc/clang O0~03)
 - 在分析`CFA`指令时，暂时没有处理 `vdso`，因此在 `vdso` 中的函数调用会导致栈回溯失败。
 - 在合并进程的C栈和Lua栈时，采用了启发式的合并策略，极端情况下可能存在一些瑕疵（目前尚未发现）。
 
@@ -53,6 +53,5 @@ sudo cat /sys/kernel/debug/tracing/trace_pipe
 
 - 支持`CFA_expression`
 - 支持`vdso`
-- 动态分析`L`寄存器
 - 优化C栈和Lua栈的合并策略
 - 支持更多版本的Lua
