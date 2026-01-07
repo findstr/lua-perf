@@ -12,6 +12,7 @@ use gimli::CieOrFde;
 use gimli::EhFrame;
 use gimli::Reader;
 use gimli::Register;
+use gimli::EndianSlice;
 use gimli::SectionBaseAddresses;
 use gimli::UnwindSection;
 use gimli::X86_64;
@@ -68,15 +69,14 @@ pub struct EhInstrContext {
 
 impl EhInstr {
 	fn new () -> Self {
-		let instr = EhInstr {
+		EhInstr {
 			sym: String::new(),
 			loc: 0,
 			size: 0,
 			cfa_reg: CfaRule::Undefined,
 			cfa_off: 0,
 			regs: std::array::from_fn(|_| RegRule::Undefined),
-		};
-		return instr;
+		}
 	}
 	fn reset(&mut self) {
 		*self = EhInstr::new();
@@ -101,7 +101,7 @@ impl std::fmt::Display for EhInstr {
 }
 
 impl<'a> EhInstrContext {
-	pub fn from_elf(elf: &'a Elf<'a>, elf_data: &'a Vec<u8>) -> Self {
+	pub fn from_elf(elf: &'a Elf<'a>, elf_data: &'a [u8]) -> Self {
 		let mut instr_ctx = EhInstrContext {
 			code_align_factor: 0,
 			data_align_factor: 1,
@@ -111,13 +111,13 @@ impl<'a> EhInstrContext {
 			instrs: Vec::new(),
     			instr: EhInstr::new(),
 		};
-		let sh = instr_ctx.find_section(&elf, ".eh_frame")
-			.or_else(||instr_ctx.find_section(&elf, ".debug_frame"))
+		let sh = instr_ctx.find_section(elf, ".eh_frame")
+			.or_else(||instr_ctx.find_section(elf, ".debug_frame"))
 			.ok_or_else(|| anyhow!("couldn't find section `.eh_frame` or `.debug_frame`")).unwrap();
 		let range = sh.file_range()
 			.ok_or_else(|| anyhow!("section has no content")).unwrap();
-		instr_ctx.parse_eh_frame(&elf, sh.sh_addr, &elf_data[range]);
-		return instr_ctx;
+		instr_ctx.parse_eh_frame(elf, sh.sh_addr, &elf_data[range]);
+		instr_ctx
 	}
 	fn find_section(&self, elf: &'a Elf, name: &str) -> Option<&'a SectionHeader> {
     		elf.section_headers
@@ -129,7 +129,9 @@ impl<'a> EhInstrContext {
 		})
 	}
 	pub fn parse_eh_frame(&mut self, elf: &Elf, vaddr: u64, content: &[u8]) {
-		let eh = EhFrame::new(content, gimli::LittleEndian); // TODO: endianness
+		let endian = gimli::LittleEndian;
+		let reader = EndianSlice::new(content, endian);
+		let eh = EhFrame::new(content, endian);
 		let base_addrs = BaseAddresses {
 			eh_frame_hdr: SectionBaseAddresses::default(),
 			eh_frame: SectionBaseAddresses {
@@ -161,13 +163,13 @@ impl<'a> EhInstrContext {
 					self.eval_begin(elf, fde.initial_address());
 					let mut instr_iter = fde.cie().instructions(&eh, &base_addrs);
 					while let Some(instr) = instr_iter.next().unwrap_or(None) {
-						self.eval(elf, instr);
+						self.eval(elf, reader, instr);
 					}
 					self.save_init();
 					//fde instruction
 					let mut instr_iter = fde.instructions(&eh, &base_addrs);
 					while let Some(instr) = instr_iter.next().unwrap_or(None) {
-						self.eval(elf, instr);
+						self.eval(elf, reader, instr);
 					}
 					self.eval_end(elf, fde.initial_address() + fde.len());
 				},
@@ -197,7 +199,7 @@ impl<'a> EhInstrContext {
    			let name = demangle(name).to_string();
    			return format!("{}+{:#x}", name, addr - sym.st_value);
 		}
-		return format!("{:#x}", addr);
+		format!("{:#x}", addr)
 	}
 	fn update_instr_sym(&mut self, elf: &Elf) {
 		if self.instr.loc == 0 {
@@ -212,7 +214,7 @@ impl<'a> EhInstrContext {
 			self.instrs.push(self.instr.clone());
 		}
 		self.instr.loc = loc;
-		self.update_instr_sym(&elf);
+		self.update_instr_sym(elf);
 	}
 	fn eval_begin(&mut self, elf: &Elf, loc: u64) {
 		self.instr.loc = loc;
@@ -228,7 +230,7 @@ impl<'a> EhInstrContext {
 			self.init_regs[i] = self.instr.regs[i].clone();
 		}
 	}
-    	fn eval<R: Reader>(&mut self, elf: &Elf, instr: CallFrameInstruction<R>) {
+    	fn eval<R: Reader>(&mut self, elf: &Elf, reader: R, instr: CallFrameInstruction<R::Offset>) {
     		use CallFrameInstruction::*;
         	match instr {
    			SetLoc { address } => {
@@ -256,7 +258,10 @@ impl<'a> EhInstrContext {
             		},
 			DefCfaExpression { expression } => {
 				self.instr.cfa_off = 0;
-				self.instr.cfa_reg = CfaRule::Expression(expression.0.to_slice().unwrap().to_vec());
+				let mut reader = reader.clone();
+				reader.skip(expression.offset).unwrap();
+				let bytes = reader.split(expression.length).unwrap().to_slice().unwrap().to_vec();
+				self.instr.cfa_reg = CfaRule::Expression(bytes);
      			},
 	        	Undefined { register } => {
 				let register = register.0 as usize;
@@ -279,7 +284,7 @@ impl<'a> EhInstrContext {
 			},
 			OffsetExtendedSf { register, factored_offset } => {
 				let register = register.0 as usize;
-				let off = factored_offset as i64 * self.data_align_factor;
+				let off = factored_offset * self.data_align_factor;
 				if register < MAX_REG {
 					self.instr.regs[register] = RegRule::Offset(off);
 				}
@@ -293,7 +298,7 @@ impl<'a> EhInstrContext {
 			},
 			ValOffsetSf { register, factored_offset } => {
 				let register = register.0 as usize;
-				let off = factored_offset as i64 * self.data_align_factor;
+				let off = factored_offset * self.data_align_factor;
 				if register < MAX_REG {
 					self.instr.regs[register] = RegRule::ValOffset(off);
 				}
@@ -310,13 +315,19 @@ impl<'a> EhInstrContext {
 			Expression { register, expression } => {
 				let register = register.0 as usize;
 				if register < MAX_REG {
-					self.instr.regs[register] = RegRule::Expression(expression.0.to_slice().unwrap().to_vec());
+					let mut reader = reader.clone();
+					reader.skip(expression.offset).unwrap();
+					let bytes = reader.split(expression.length).unwrap().to_slice().unwrap().to_vec();
+					self.instr.regs[register] = RegRule::Expression(bytes);
 				}
 			},
 			ValExpression { register, expression } => {
 				let register = register.0 as usize;
 				if register < MAX_REG {
-					self.instr.regs[register] = RegRule::ValExpression(expression.0.to_slice().unwrap().to_vec());
+					let mut reader = reader.clone();
+					reader.skip(expression.offset).unwrap();
+					let bytes = reader.split(expression.length).unwrap().to_slice().unwrap().to_vec();
+					self.instr.regs[register] = RegRule::ValExpression(bytes);
 				}
 			},
 			Restore { register } => {

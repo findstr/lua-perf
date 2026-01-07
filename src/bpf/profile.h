@@ -295,11 +295,11 @@ static __always_inline u32 string_to_id(char *str, u32 len)
 	u32 hash, i;
 	struct string *cache;
 	FETCH_TMP_VAR(struct string, str_buf, 0)
+	len &= 0xfffff;
 	if (len > sizeof(str_buf->data)) {
 		 str += len - sizeof(str_buf->data);
 		 len = sizeof(str_buf->data);
 	}
-	len &= 0xfffff;
 	str_buf->len = len;
 	err = bpf_probe_read_user(str_buf->data, str_buf->len, str);
 	if (err != 0) {

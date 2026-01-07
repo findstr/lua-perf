@@ -11,12 +11,52 @@ env:
 
 jobs:
   build:
-
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          clang \
+          llvm \
+          libelf-dev \
+          linux-tools-common \
+          linux-tools-generic \
+          libbpf-dev \
+          linux-headers-$(uname -r)
+
+    - name: Setup bpftool
+      run: |
+        # Link bpftool from linux-tools
+        sudo ln -sf /usr/lib/linux-tools/*/bpftool /usr/local/bin/bpftool || true
+        bpftool version
+
+    - name: Generate vmlinux.h if BTF not available
+      run: |
+        # Check if BTF is available on the runner
+        if [ ! -f /sys/kernel/btf/vmlinux ]; then
+          echo "BTF not available, downloading pre-generated vmlinux.h..."
+          mkdir -p src/bpf
+          # Use vmlinux.h from libbpf-bootstrap (covers common kernel structures)
+          curl -sL https://raw.githubusercontent.com/libbpf/libbpf-bootstrap/master/vmlinux/vmlinux_608.h -o src/bpf/vmlinux.h
+          echo "Downloaded vmlinux.h"
+        else
+          echo "BTF available at /sys/kernel/btf/vmlinux"
+        fi
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+
     - name: Build
-      run: cargo build --verbose
+      run: |
+        # If vmlinux.h was pre-generated, skip btf_dump in build.rs
+        if [ -f src/bpf/vmlinux.h ]; then
+          export SKIP_BTF_DUMP=1
+        fi
+        cargo build --verbose
+
     - name: Run tests
       run: cargo test --verbose

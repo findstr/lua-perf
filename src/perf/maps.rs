@@ -1,6 +1,5 @@
 use std::collections::HashMap;
-use procmaps::Mappings;
-use procmaps::Path;
+use procfs::process::{Process, MMapPath};
 use libc::pid_t;
 
 use goblin::elf::Elf;
@@ -67,39 +66,46 @@ impl FileMaps {
 impl Files {
 	fn parse_files(pid: pid_t) ->HashMap<String, FileMaps> {
 		let mut files = HashMap::new();
-		let mappings = Mappings::from_pid(pid).unwrap();
-		for map in mappings.iter() {
-			if !map.perms.executable {
-				continue;
-			}
-			if let Path::MappedFile(path) = &map.pathname {
-				if !path.starts_with("/") {
-					continue
-				}
-				files.entry(String::from(path))
-					.or_insert(FileMaps{path: path.to_string(), maps:Vec::new()}).maps
-					.push(Map {
-						vaddr: 0,
-						base : map.base as u64,
-						offset: map.offset as u64,
-						size: (map.ceiling - map.base) as u64,
-					});
-			}
-		}
-		for (_, f) in &mut files {
+        // procfs 0.18
+        if let Ok(process) = Process::new(pid) {
+            if let Ok(maps) = process.maps() {
+                for map in maps {
+                    if !map.perms.contains(procfs::process::MMPermissions::EXECUTE) {
+                        continue;
+                    }
+                    if let MMapPath::Path(path) = &map.pathname {
+                        let path_str = path.to_string_lossy().into_owned();
+                        if !path_str.starts_with("/") {
+                            continue
+                        }
+                        let (start, end) = map.address;
+                        files.entry(path_str.clone())
+                            .or_insert(FileMaps{path: path_str, maps:Vec::new()}).maps
+                            .push(Map {
+                                vaddr: 0,
+                                base : start,
+                                offset: map.offset,
+                                size: end - start,
+                            });
+                    }
+                }
+            }
+        }
+		
+		for f in files.values_mut() {
 			if f.path.contains("(deleted)") {
 				continue
 			}
 			f.parse();
 		}
-		return files;
+		files
 	}
 	pub fn from_pid(pid: pid_t) -> Self {
 		Files {
 			files: Files::parse_files(pid),
 		}
 	}
-	pub fn iter(&self) -> std::collections::hash_map::Iter::<String, FileMaps> {
-		return self.files.iter();
+	pub fn iter(&self) -> std::collections::hash_map::Iter::<'_, String, FileMaps> {
+		self.files.iter()
 	}
 }
